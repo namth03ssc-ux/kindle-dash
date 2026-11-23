@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kindle Dashboard</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;800&amp;display=swap">
+<!--
+  Dashboard Kindle Paperwhite 4 v6 (font Nunito thống nhất): mức sử dụng Claude + thời tiết + lịch dương/âm.
+  JavaScript ES5 cho trình duyệt Kindle.
+  Tham số URL:
+    usage = địa chỉ raw của file usage.json trên GitHub Gist (do script Kindle-Dashboard_Statusline_v1.py đẩy lên)
+    city, lat, lon = vị trí thời tiết (mặc định Hà Nội)
+  Ví dụ:
+    index.html?usage=https://gist.githubusercontent.com/<user>/<gist-id>/raw/usage.json&city=Hà Nội
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: #fff; color: #000; }
+  body, table, td, th, div { font-family: 'Nunito', 'Amazon Ember', Helvetica, Arial, sans-serif; }
+  body { padding: 10px 22px; line-height: 1.15; }
+  table { border-collapse: collapse; width: 100%; }
+  .lbl { font-size: 15px; letter-spacing: 2px; text-transform: uppercase; font-weight: bold; }
+  .muted { color: #555; font-size: 17px; }
+  .hdr { border-bottom: 3px solid #000; padding-bottom: 8px; }
+  .hdr .t { font-size: 32px; font-weight: bold; }
+  .sec { border-top: 3px solid #000; padding-top: 10px; margin-top: 16px; }
+  #wkPct { font-size: 140px; font-weight: 800; line-height: 1; letter-spacing: -2px; }
+  #wkMood { font-size: 32px; margin-top: 4px; }
+  #wkReset { font-size: 20px; margin-top: 6px; }
+  /* Thanh tiến độ */
+  .bar { position: relative; height: 34px; border: 3px solid #000; border-radius: 15px; overflow: hidden; background: #fff; }
+  .bar .fill { position: absolute; left: 0; top: 0; bottom: 0; background: #000; }
+  .bar .tick { position: absolute; top: 0; bottom: 0; width: 1px; background: #888; }
+  .marker { position: relative; height: 22px; }
+  .marker .tri { position: absolute; top: 2px; width: 0; height: 0; margin-left: -10px;
+    border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 15px solid #000; }
+  .marker .txt { position: absolute; top: 1px; font-size: 16px; white-space: nowrap; margin-left: 12px; }
+  .sm .bar { height: 18px; border-width: 2px; border-radius: 9px; }
+  .box td { vertical-align: top; }
+  .box .name { font-size: 24px; font-weight: bold; }
+  .box .pct { font-size: 38px; font-weight: bold; text-align: right; }
+  /* Thời tiết */
+  #nowtemp { font-size: 90px; font-weight: 800; line-height: 1; }
+  #nowdesc { font-size: 30px; font-weight: bold; }
+  #nowmeta { font-size: 22px; margin-top: 6px; }
+  .fc td { text-align: center; font-size: 19px; padding: 6px 2px; border-left: 1px solid #999; }
+  .fc td.first { border-left: none; }
+  .fc .d { font-weight: bold; }
+  .fc .tt { font-size: 23px; font-weight: bold; }
+  /* Lịch */
+  #today { font-size: 30px; font-weight: bold; }
+  #lunar { font-size: 22px; margin-top: 2px; }
+  .cal { margin-top: 8px; }
+  .cal td, .cal th { text-align: center; font-size: 19px; padding: 2px 0; width: 14.28%; line-height: 1; }
+  .cal th { font-size: 14px; }
+  .cal td.today { background: #000; color: #fff; font-weight: bold; }
+  .cal td.sun { font-weight: bold; }
+  .cal .lu { display: block; font-size: 11px; }
+  #foot { font-size: 14px; margin-top: 12px; color: #444; border-top: 1px solid #999; padding-top: 6px; }
+</style>
+</head>
+<body>
+
+<table class="hdr"><tr>
+  <td class="t">Claude</td>
+  <td class="muted" style="text-align:right" id="asof">&nbsp;</td>
+</tr></table>
+
+<!-- Mức dùng tuần -->
+<table style="margin-top:10px"><tr>
+  <td style="vertical-align:middle; width:58%"><div id="wkPct">--%</div></td>
+  <td style="vertical-align:middle">
+    <div class="lbl">Tuần này</div>
+    <div id="wkMood">Đang tải...</div>
+    <div id="wkReset" class="muted">&nbsp;</div>
+  </td>
+</tr></table>
+<div class="bar" id="wkBar" style="margin-top:12px"><div class="fill" id="wkFill" style="width:0"></div></div>
+<div class="marker"><div class="tri" id="wkTri" style="left:0"></div><div class="txt" id="wkTriTxt" style="left:0"></div></div>
+
+<!-- Phiên 5 giờ + giới hạn theo model -->
+<table class="box sm" style="margin-top:14px"><tr id="boxes"><td></td></tr></table>
+
+<!-- Thời tiết -->
+<div class="sec">
+  <table><tr>
+    <td style="vertical-align:top">
+      <div class="lbl" id="city">Thời tiết</div>
+      <div id="nowdesc">Đang tải...</div>
+      <div id="nowmeta">&nbsp;</div>
+    </td>
+    <td style="vertical-align:top; text-align:right"><div id="nowtemp">--°</div></td>
+  </tr></table>
+  <table class="fc" style="margin-top:10px"><tr id="fc"><td>&nbsp;</td></tr></table>
+</div>
+
+<!-- Lịch dương + âm -->
+<div class="sec">
+  <table><tr>
+    <td style="vertical-align:bottom"><div class="lbl">Lịch</div><div id="today">&nbsp;</div></td>
+    <td style="vertical-align:bottom; text-align:right"><div id="lunar">&nbsp;</div></td>
+  </tr></table>
+  <table class="cal" id="cal"></table>
+</div>
+
+<div id="foot">&nbsp;</div>
+
+<script>
+(function () {
+  function param(name, def) {
+    var m = new RegExp('[?&]' + name + '=([^&]*)').exec(window.location.search);
+    return m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : def;
+  }
+  var CFG = {
+    usage: param('usage', ''),
+    city: param('city', 'Hà Nội'),
+    lat: param('lat', '21.03'),
+    lon: param('lon', '105.85')
+  };
+  var TZ = 7;
+  var DOW = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
+  var DOW_LONG = ['Chủ nhật', 'Thứ hai', 'Thứ ba', 'Thứ tư', 'Thứ năm', 'Thứ sáu', 'Thứ bảy'];
+  var WEEK = 7 * 24 * 3600, FIVE_H = 5 * 3600;
+
+  function $(id) { return document.getElementById(id); }
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function nowSec() { return Math.floor(new Date().getTime() / 1000); }
+  function vn(sec) { return new Date((sec + TZ * 3600) * 1000); }
+  function hm(sec) { var d = vn(sec); return pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()); }
+  function dowHm(sec) { var d = vn(sec); return DOW[d.getUTCDay()] + ' ' + hm(sec); }
+  function left(sec) {
+    var s = Math.max(0, sec - nowSec()), d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+    if (d > 0) return 'còn ' + d + ' ngày ' + h + ' giờ';
+    if (h > 0) return 'còn ' + h + ' giờ ' + pad(m) + ' phút';
+    return 'còn ' + m + ' phút';
+  }
+  function clamp(v) { return Math.max(0, Math.min(100, v)); }
+  // resets_at có thể là giây unix hoặc chuỗi ISO
+  function toSec(v) {
+    if (v === null || v === undefined || v === '') return null;
+    if (typeof v === 'number') return v > 1e12 ? Math.floor(v / 1000) : v;
+    var t = Date.parse(v);
+    return isNaN(t) ? null : Math.floor(t / 1000);
+  }
+  function getJSON(url, ok, fail) {
+    var x = new XMLHttpRequest();
+    x.open('GET', url, true);
+    x.onreadystatechange = function () {
+      if (x.readyState !== 4) return;
+      if (x.status === 200) { try { ok(JSON.parse(x.responseText)); } catch (e) { if (fail) fail(e); } }
+      else if (fail) fail(x.status);
+    };
+    x.send();
+  }
+
+  // ---------- Mức dùng Claude ----------
+  var usageAt = null, wTime = '--';
+  function mood(used, elapsed) {
+    if (used >= 95) return 'Sắp chạm giới hạn';
+    if (used <= elapsed - 10) return 'Thoải mái';
+    if (used <= elapsed + 10) return 'Đúng nhịp';
+    return 'Dùng nhanh hơn nhịp';
+  }
+  function boxHtml(name, pct, resetSec, windowSec) {
+    var meta = resetSec ? 'đặt lại ' + (windowSec === FIVE_H ? hm(resetSec) : dowHm(resetSec)) + ' · ' + left(resetSec) : 'chưa có thời điểm đặt lại';
+    return '<td><table><tr><td class="name">' + name + '</td><td class="pct">' + Math.round(pct) + '%</td></tr></table>' +
+      '<div class="bar"><div class="fill" style="width:' + clamp(pct) + '%"></div></div>' +
+      '<div class="muted" style="margin-top:4px">' + meta + '</div></td>';
+  }
+  function roll(w, len) {
+    if (!w || w.used_percentage === null || w.used_percentage === undefined) return w;
+    var r = toSec(w.resets_at);
+    if (!r || r > nowSec()) return w;
+    while (r <= nowSec()) r += len;
+    return { used_percentage: 0, resets_at: r, rolled: true };
+  }
+  var lastUsage = null;
+  function renderUsage(u) {
+    lastUsage = u;
+    usageAt = u.updated ? toSec(u.updated) : null;
+    var wk = roll(u.seven_day, WEEK), fh = roll(u.five_hour, FIVE_H);
+    if (wk && wk.used_percentage !== null && wk.used_percentage !== undefined) {
+      var used = +wk.used_percentage, reset = toSec(wk.resets_at);
+      $('wkPct').innerHTML = Math.round(used) + '%';
+      var ticks = '';
+      for (var i = 1; i < 7; i++) ticks += '<div class="tick" style="left:' + (i / 7 * 100) + '%"></div>';
+      $('wkBar').innerHTML = '<div class="fill" id="wkFill" style="width:' + clamp(used) + '%"></div>' + ticks;
+      if (reset) {
+        var elapsed = clamp((1 - (reset - nowSec()) / WEEK) * 100);
+        $('wkMood').innerHTML = mood(used, elapsed);
+        $('wkReset').innerHTML = 'đặt lại ' + dowHm(reset) + '<br>' + left(reset);
+        $('wkTri').style.left = elapsed + '%';
+        $('wkTriTxt').style.left = elapsed + '%';
+        $('wkTriTxt').innerHTML = 'đã trôi ' + Math.round(elapsed) + '% thời gian';
+      } else {
+        $('wkMood').innerHTML = '&nbsp;';
+        $('wkReset').innerHTML = '&nbsp;';
+      }
+    } else {
+      $('wkPct').innerHTML = '--%';
+      $('wkMood').innerHTML = 'Chưa có số liệu tuần';
+    }
+    var html = '';
+    if (fh && fh.used_percentage !== null && fh.used_percentage !== undefined) {
+      html += boxHtml('Phiên 5 giờ', +fh.used_percentage, toSec(fh.resets_at), FIVE_H);
+    }
+    $('boxes').innerHTML = html || '<td class="muted">Chưa có số liệu phiên 5 giờ</td>';
+    renderFoot();
+  }
+  function loadUsage() {
+    if (!CFG.usage) {
+      $('wkMood').innerHTML = 'Chưa cấu hình';
+      $('wkReset').innerHTML = 'Thêm ?usage=&lt;link Gist&gt; vào địa chỉ trang';
+      $('boxes').innerHTML = '<td></td>';
+      return;
+    }
+    var sep = CFG.usage.indexOf('?') < 0 ? '?' : '&';
+    getJSON(CFG.usage + sep + 't=' + nowSec(), renderUsage, function () {
+      $('wkMood').innerHTML = 'Lỗi tải số liệu';
+    });
+  }
+
+  // ---------- Thời tiết (Open-Meteo) ----------
+  function wDesc(c) {
+    if (c === 0) return 'Trời quang';
+    if (c <= 2) return 'Ít mây';
+    if (c === 3) return 'Nhiều mây';
+    if (c === 45 || c === 48) return 'Sương mù';
+    if (c >= 51 && c <= 57) return 'Mưa phùn';
+    if (c >= 61 && c <= 67) return c >= 65 ? 'Mưa to' : 'Mưa';
+    if (c >= 71 && c <= 77) return 'Tuyết';
+    if (c >= 80 && c <= 82) return 'Mưa rào';
+    if (c >= 95) return 'Dông';
+    return 'Mã ' + c;
+  }
+  function loadWeather() {
+    var url = 'https://api.open-meteo.com/v1/forecast?latitude=' + CFG.lat + '&longitude=' + CFG.lon +
+      '&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m' +
+      '&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max' +
+      '&forecast_days=5&timezone=Asia%2FBangkok';
+    getJSON(url, function (j) {
+      var c = j.current, dl = j.daily;
+      $('city').innerHTML = 'Thời tiết · ' + CFG.city;
+      $('nowtemp').innerHTML = Math.round(c.temperature_2m) + '°';
+      $('nowdesc').innerHTML = wDesc(c.weather_code);
+      $('nowmeta').innerHTML = 'Cảm giác ' + Math.round(c.apparent_temperature) + '° · Ẩm ' +
+        c.relative_humidity_2m + '% · Gió ' + Math.round(c.wind_speed_10m) + ' km/h';
+      var html = '';
+      for (var i = 0; i < dl.time.length; i++) {
+        var p = dl.time[i].split('-');
+        var dow = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])).getUTCDay();
+        html += '<td' + (i === 0 ? ' class="first"' : '') + '><div class="d">' + (i === 0 ? 'Hôm nay' : DOW_LONG[dow]) + '<br>' + (+p[2]) + '/' + (+p[1]) +
+          '</div><div class="tt">' + Math.round(dl.temperature_2m_min[i]) + '–' + Math.round(dl.temperature_2m_max[i]) + '°</div>' +
+          '<div>' + wDesc(dl.weather_code[i]) + '</div><div>Mưa ' + (dl.precipitation_probability_max[i] || 0) + '%</div></td>';
+      }
+      $('fc').innerHTML = html;
+      wTime = hm(nowSec());
+      renderFoot();
+    }, function () { $('nowdesc').innerHTML = 'Lỗi tải thời tiết'; });
+  }
+
+  // ---------- Âm lịch (thuật toán Hồ Ngọc Đức) ----------
+  var PI = Math.PI, INT = Math.floor;
+  function jdFromDate(dd, mm, yy) {
+    var a = INT((14 - mm) / 12), y = yy + 4800 - a, m = mm + 12 * a - 3;
+    return dd + INT((153 * m + 2) / 5) + 365 * y + INT(y / 4) - INT(y / 100) + INT(y / 400) - 32045;
+  }
+  function newMoon(k) {
+    var T = k / 1236.85, T2 = T * T, T3 = T2 * T, dr = PI / 180;
+    var Jd1 = 2415020.75933 + 29.53058868 * k + 0.0001178 * T2 - 0.000000155 * T3;
+    Jd1 += 0.00033 * Math.sin((166.56 + 132.87 * T - 0.009173 * T2) * dr);
+    var M = 359.2242 + 29.10535608 * k - 0.0000333 * T2 - 0.00000347 * T3;
+    var Mpr = 306.0253 + 385.81691806 * k + 0.0107306 * T2 + 0.00001236 * T3;
+    var F = 21.2964 + 390.67050646 * k - 0.0016528 * T2 - 0.00000239 * T3;
+    var C1 = (0.1734 - 0.000393 * T) * Math.sin(M * dr) + 0.0021 * Math.sin(2 * dr * M);
+    C1 = C1 - 0.4068 * Math.sin(Mpr * dr) + 0.0161 * Math.sin(dr * 2 * Mpr);
+    C1 = C1 - 0.0004 * Math.sin(dr * 3 * Mpr);
+    C1 = C1 + 0.0104 * Math.sin(dr * 2 * F) - 0.0051 * Math.sin(dr * (M + Mpr));
+    C1 = C1 - 0.0074 * Math.sin(dr * (M - Mpr)) + 0.0004 * Math.sin(dr * (2 * F + M));
+    C1 = C1 - 0.0004 * Math.sin(dr * (2 * F - M)) - 0.0006 * Math.sin(dr * (2 * F + Mpr));
+    C1 = C1 + 0.0010 * Math.sin(dr * (2 * F - Mpr)) + 0.0005 * Math.sin(dr * (2 * Mpr + M));
+    var dt = T < -11
+      ? 0.001 + 0.000839 * T + 0.0002261 * T2 - 0.00000845 * T3 - 0.000000081 * T * T3
+      : -0.000278 + 0.000265 * T + 0.000262 * T2;
+    return INT(Jd1 + C1 - dt + 0.5 + TZ / 24);
+  }
+  function sunLong(jdn) {
+    var T = (jdn - 2451545.5 - TZ / 24) / 36525, T2 = T * T, dr = PI / 180;
+    var M = 357.52910 + 35999.05030 * T - 0.0001559 * T2 - 0.00000048 * T * T2;
+    var L0 = 280.46645 + 36000.76983 * T + 0.0003032 * T2;
+    var DL = (1.914600 - 0.004817 * T - 0.000014 * T2) * Math.sin(dr * M);
+    DL += (0.019993 - 0.000101 * T) * Math.sin(dr * 2 * M) + 0.000290 * Math.sin(dr * 3 * M);
+    var L = (L0 + DL) * dr;
+    L = L - PI * 2 * INT(L / (PI * 2));
+    return INT(L / PI * 6);
+  }
+  function month11(yy) {
+    var k = INT((jdFromDate(31, 12, yy) - 2415021) / 29.530588853);
+    var nm = newMoon(k);
+    if (sunLong(nm) >= 9) nm = newMoon(k - 1);
+    return nm;
+  }
+  function leapOffset(a11) {
+    var k = INT((a11 - 2415021.076998695) / 29.530588853 + 0.5), last, i = 1;
+    var arc = sunLong(newMoon(k + i));
+    do { last = arc; i++; arc = sunLong(newMoon(k + i)); } while (arc !== last && i < 14);
+    return i - 1;
+  }
+  function solar2lunar(dd, mm, yy) {
+    var day = jdFromDate(dd, mm, yy);
+    var k = INT((day - 2415021.076998695) / 29.530588853);
+    var start = newMoon(k + 1);
+    if (start > day) start = newMoon(k);
+    var a11 = month11(yy), b11 = a11, ly;
+    if (a11 >= start) { ly = yy; a11 = month11(yy - 1); } else { ly = yy + 1; b11 = month11(yy + 1); }
+    var ld = day - start + 1, diff = INT((start - a11) / 29), leap = 0, lm = diff + 11;
+    if (b11 - a11 > 365) {
+      var ld2 = leapOffset(a11);
+      if (diff >= ld2) { lm = diff + 10; if (diff === ld2) leap = 1; }
+    }
+    if (lm > 12) lm -= 12;
+    if (lm >= 11 && diff < 4) ly -= 1;
+    return { d: ld, m: lm, y: ly, leap: leap };
+  }
+  var CAN = ['Giáp', 'Ất', 'Bính', 'Đinh', 'Mậu', 'Kỷ', 'Canh', 'Tân', 'Nhâm', 'Quý'];
+  var CHI = ['Tý', 'Sửu', 'Dần', 'Mão', 'Thìn', 'Tỵ', 'Ngọ', 'Mùi', 'Thân', 'Dậu', 'Tuất', 'Hợi'];
+  function canChiYear(y) { return CAN[(y + 6) % 10] + ' ' + CHI[(y + 8) % 12]; }
+
+  // ---------- Lịch tháng ----------
+  var lastDay = -1;
+  function renderCalendar() {
+    var n = vn(nowSec()), today = n.getUTCDate(), m = n.getUTCMonth() + 1, y = n.getUTCFullYear();
+    if (today === lastDay) return;
+    lastDay = today;
+    var l = solar2lunar(today, m, y);
+    $('today').innerHTML = DOW_LONG[n.getUTCDay()] + ', ' + today + '/' + m + '/' + y;
+    $('lunar').innerHTML = 'Âm lịch: <b>' + l.d + '/' + l.m + (l.leap ? ' nhuận' : '') + '</b> · năm ' + canChiYear(l.y);
+    var offset = (new Date(Date.UTC(y, m - 1, 1)).getUTCDay() + 6) % 7;
+    var dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    var html = '<tr><th>T2</th><th>T3</th><th>T4</th><th>T5</th><th>T6</th><th>T7</th><th>CN</th></tr>';
+    var day = 1 - offset;
+    while (day <= dim) {
+      html += '<tr>';
+      for (var i = 0; i < 7; i++, day++) {
+        if (day < 1 || day > dim) { html += '<td>&nbsp;</td>'; continue; }
+        var ld = solar2lunar(day, m, y);
+        var lu = ld.d === 1 ? ld.d + '/' + ld.m : ld.d;
+        var cls = day === today ? ' class="today"' : (i === 6 ? ' class="sun"' : '');
+        html += '<td' + cls + '>' + day + '<span class="lu">' + lu + '</span></td>';
+      }
+      html += '</tr>';
+    }
+    $('cal').innerHTML = html;
+  }
+
+  function renderFoot() {
+    var d = vn(nowSec());
+    var stale = usageAt && nowSec() - usageAt > 13 * 3600 ? ' (đã cũ hơn 13 giờ)' : '';
+    $('asof').innerHTML = usageAt ? 'số liệu lúc ' + hm(usageAt) + stale : '&nbsp;';
+    $('foot').innerHTML = 'Claude cập nhật ' + (usageAt ? dowHm(usageAt) : '--') + ' · Thời tiết cập nhật ' + wTime;
+  }
+
+  renderCalendar(); loadUsage(); loadWeather();
+  setInterval(renderCalendar, 10 * 60 * 1000);
+  setInterval(loadUsage, 10 * 60 * 1000);
+  setInterval(function () { if (lastUsage) renderUsage(lastUsage); }, 60 * 1000);
+  setInterval(loadWeather, 30 * 60 * 1000);
+  setTimeout(function () { window.location.reload(); }, 6 * 3600 * 1000);
+})();
+</script>
+</body>
+</html>
