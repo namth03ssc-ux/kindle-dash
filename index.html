@@ -6,10 +6,12 @@
 <title>Kindle Dashboard</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;800&amp;display=swap">
 <!--
-  Dashboard Kindle Paperwhite 4 v6 (font Nunito thống nhất): mức sử dụng Claude + thời tiết + lịch dương/âm.
+  Dashboard Kindle Paperwhite 4 v8: mức sử dụng Claude + thời tiết + lịch dương/âm, có nút Cập nhật.
+  Chạy cùng Kindle-Dashboard_Server_v1.py trên máy tính: mở http://<IP máy tính>:8765/ trên Kindle.
+  Nút Cập nhật gọi /refresh (máy chủ hỏi lại mức dùng), tải lại thời tiết và lịch.
   JavaScript ES5 cho trình duyệt Kindle.
   Tham số URL:
-    usage = địa chỉ raw của file usage.json trên GitHub Gist (do script Kindle-Dashboard_Statusline_v1.py đẩy lên)
+    usage = (tuỳ chọn) địa chỉ usage.json khác; mặc định dùng usage.json của máy chủ
     city, lat, lon = vị trí thời tiết (mặc định Hà Nội)
   Ví dụ:
     index.html?usage=https://gist.githubusercontent.com/<user>/<gist-id>/raw/usage.json&city=Hà Nội
@@ -23,6 +25,9 @@
   .muted { color: #555; font-size: 17px; }
   .hdr { border-bottom: 3px solid #000; padding-bottom: 8px; }
   .hdr .t { font-size: 32px; font-weight: bold; }
+  #btn { display: inline-block; font-size: 22px; font-weight: bold; padding: 10px 18px; border: 3px solid #000;
+    border-radius: 12px; background: #fff; color: #000; text-decoration: none; margin-left: 12px; }
+  #btn.busy { background: #000; color: #fff; }
   .sec { border-top: 3px solid #000; padding-top: 10px; margin-top: 16px; }
   #wkPct { font-size: 140px; font-weight: 800; line-height: 1; letter-spacing: -2px; }
   #wkMood { font-size: 32px; margin-top: 4px; }
@@ -63,7 +68,7 @@
 
 <table class="hdr"><tr>
   <td class="t">Claude</td>
-  <td class="muted" style="text-align:right" id="asof">&nbsp;</td>
+  <td style="text-align:right; white-space:nowrap"><span class="muted" id="asof">&nbsp;</span><a href="#" id="btn">Cập nhật</a></td>
 </tr></table>
 
 <!-- Mức dùng tuần -->
@@ -112,7 +117,7 @@
     return m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : def;
   }
   var CFG = {
-    usage: param('usage', ''),
+    usage: param('usage', 'usage.json'),
     city: param('city', 'Hà Nội'),
     lat: param('lat', '21.03'),
     lon: param('lon', '105.85')
@@ -167,6 +172,7 @@
       '<div class="bar"><div class="fill" style="width:' + clamp(pct) + '%"></div></div>' +
       '<div class="muted" style="margin-top:4px">' + meta + '</div></td>';
   }
+  // Nếu đã qua giờ đặt lại mà chưa có số mới: coi như 0%, giờ đặt lại kế tiếp = cũ + độ dài cửa sổ
   function roll(w, len) {
     if (!w || w.used_percentage === null || w.used_percentage === undefined) return w;
     var r = toSec(w.resets_at);
@@ -207,7 +213,7 @@
     $('boxes').innerHTML = html || '<td class="muted">Chưa có số liệu phiên 5 giờ</td>';
     renderFoot();
   }
-  function loadUsage() {
+  function loadUsage(path, done) {
     if (!CFG.usage) {
       $('wkMood').innerHTML = 'Chưa cấu hình';
       $('wkReset').innerHTML = 'Thêm ?usage=&lt;link Gist&gt; vào địa chỉ trang';
@@ -215,8 +221,15 @@
       return;
     }
     var sep = CFG.usage.indexOf('?') < 0 ? '?' : '&';
-    getJSON(CFG.usage + sep + 't=' + nowSec(), renderUsage, function () {
+    var url = path ? path + '?t=' + nowSec() : CFG.usage + sep + 't=' + nowSec();
+    getJSON(url, function (u) {
+      renderUsage(u);
+      if (u.error) $('wkReset').innerHTML = 'Lỗi cập nhật: ' + String(u.error).substring(0, 80);
+      if (done) done(true);
+    }, function () {
+      if (path) { loadUsage(null, done); return; } // không có máy chủ (vd GitHub Pages): đọc số đã có
       $('wkMood').innerHTML = 'Lỗi tải số liệu';
+      if (done) done(false);
     });
   }
 
@@ -233,7 +246,7 @@
     if (c >= 95) return 'Dông';
     return 'Mã ' + c;
   }
-  function loadWeather() {
+  function loadWeather(done) {
     var url = 'https://api.open-meteo.com/v1/forecast?latitude=' + CFG.lat + '&longitude=' + CFG.lon +
       '&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m' +
       '&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max' +
@@ -256,7 +269,8 @@
       $('fc').innerHTML = html;
       wTime = hm(nowSec());
       renderFoot();
-    }, function () { $('nowdesc').innerHTML = 'Lỗi tải thời tiết'; });
+      if (done) done(true);
+    }, function () { $('nowdesc').innerHTML = 'Lỗi tải thời tiết'; if (done) done(false); });
   }
 
   // ---------- Âm lịch (thuật toán Hồ Ngọc Đức) ----------
@@ -360,11 +374,31 @@
     $('foot').innerHTML = 'Claude cập nhật ' + (usageAt ? dowHm(usageAt) : '--') + ' · Thời tiết cập nhật ' + wTime;
   }
 
+  // ---------- Nút Cập nhật ----------
+  var busy = false;
+  function refreshAll() {
+    if (busy) return false;
+    busy = true;
+    var btn = $('btn'), left = 2;
+    btn.className = 'busy'; btn.innerHTML = 'Đang cập nhật...';
+    function one() {
+      if (--left > 0) return;
+      busy = false; btn.className = ''; btn.innerHTML = 'Cập nhật';
+    }
+    lastDay = -1; renderCalendar();
+    if (CFG.usage === 'usage.json') loadUsage('refresh', one); else loadUsage(null, one);
+    loadWeather(one);
+    setTimeout(function () { if (busy) { left = 1; one(); } }, 150 * 1000);
+    return false;
+  }
+  $('btn').onclick = refreshAll;
+
   renderCalendar(); loadUsage(); loadWeather();
   setInterval(renderCalendar, 10 * 60 * 1000);
-  setInterval(loadUsage, 10 * 60 * 1000);
+  setInterval(function () { loadUsage(); }, 10 * 60 * 1000);
+  // Cập nhật đếm ngược mỗi phút từ số đã có
   setInterval(function () { if (lastUsage) renderUsage(lastUsage); }, 60 * 1000);
-  setInterval(loadWeather, 30 * 60 * 1000);
+  setInterval(function () { loadWeather(); }, 30 * 60 * 1000);
   setTimeout(function () { window.location.reload(); }, 6 * 3600 * 1000);
 })();
 </script>
